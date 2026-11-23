@@ -1,0 +1,55 @@
+name: Prepare Unpacker Release Draft
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable tag from default branch (v0.1.2)
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: unpacker-release-${{ inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.repository == 'gnznovus/syndamorph-unpacker' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify stable tag from current default branch
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo 'Expected stable vMAJOR.MINOR.PATCH' >&2; exit 1
+          fi
+          tagged=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
+          git merge-base --is-ancestor "$tagged" "$GITHUB_SHA" || { echo 'Tag not in default branch history' >&2; exit 1; }
+          git checkout --detach "$tagged"
+      - name: Verify and package release
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          find syndamorph-unpacker-poc tests -name '*.php' -print0 | xargs -0 -n 1 php -l
+          php tests/import-test.php
+          php tests/updater-test.php
+          python3 scripts/package_release.py . dist/syndamorph-unpacker-poc.zip "${TAG#v}"
+          (cd dist && sha256sum -c syndamorph-unpacker-poc.zip.sha256)
+      - name: Create unpublished release draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo 'Release exists already' >&2; exit 1
+          fi
+          gh release create "$TAG" dist/syndamorph-unpacker-poc.zip dist/syndamorph-unpacker-poc.zip.sha256 \
+            --verify-tag --draft --title "Unpacker $TAG" \
+            --notes "Independent client-side Gutenberg Unpacker update test $TAG"
+          echo "Draft created; publish manually after verification." >> "$GITHUB_STEP_SUMMARY"
