@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.5] - 2026-11-23
+
+- Add a 15-minute WP-Cron heartbeat to refresh the latest published GitHub release metadata on active sites.
+- Add a manual GitHub update check that clears both plugin release metadata and WordPress update caches.
+- Display installed/latest versions, last successful or failed check, and an update link within the Unpacker admin page.
+- Reduce successful release-metadata cache lifetime from six hours to five minutes; preserve native WordPress update installation and the published-release gate.
+
+
 ## [0.1.4] - 2026-11-23
 
 - Add optional Secure Gateway customer connection using encrypted client-level API keys.
