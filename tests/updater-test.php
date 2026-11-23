@@ -68,5 +68,7 @@ check( str_contains( $details->sections['changelog'], 'Test release notes' ), 'R
 check( false === $info( false, 'plugin_information', (object) array( 'slug' => 'other' ) ), 'Plugin details leaked to other slug' );
 $GLOBALS['transients'] = array();
 $GLOBALS['response'] = array( 'code' => 404, 'body' => 'Not Found' );
-check( [] === smup_release_metadata() && $GLOBALS['ttl'] === 900, 'Failed API response must fail closed and short-cache' );
+check( [] === smup_release_metadata() && $GLOBALS['ttl'] === 60, 'Failed API response must fail closed and short-cache' );
+$fallback = $update( false, $data, SMUP_PLUGIN_FILE );
+check( is_array( $fallback ) && $fallback['version'] === '0.1.1' && '' === $fallback['package'], 'Missing release must still register supported no-update metadata' );
 print "PASS: GitHub release parsing, security gates, caching, WordPress update and plugin-info hooks\n";
