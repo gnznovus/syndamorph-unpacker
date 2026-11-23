@@ -60,40 +60,46 @@ function smup_validate_blocks( string $content ) {
     return true;
 }
 
+function smup_read_zip_file( string $filename ) {
+    if ( ! is_file( $filename ) || (int) filesize( $filename ) > SMUP_MAX_ZIP_BYTES || (int) filesize( $filename ) <= 0 ) {
+        return smup_error( 'Package ZIP exceeds the allowed size or is missing.' );
+    }
+    if ( ! class_exists( 'ZipArchive' ) ) { return smup_error( 'PHP ZipArchive is unavailable.' ); }
+    $zip = new ZipArchive();
+    if ( true !== $zip->open( $filename, ZipArchive::RDONLY ) ) { return smup_error( 'The ZIP cannot be opened.' ); }
+    try {
+        if ( 2 !== $zip->numFiles ) { return smup_error( 'POC ZIP must contain exactly manifest.json and pattern.blocks.html.' ); }
+        $expected = array( 'manifest.json' => true, 'pattern.blocks.html' => true );
+        for ( $i = 0; $i < $zip->numFiles; $i++ ) {
+            $entry = $zip->statIndex( $i );
+            $name = $entry['name'] ?? '';
+            if ( ! isset( $expected[ $name ] ) || (int) ( $entry['size'] ?? 0 ) > SMUP_MAX_CONTENT_BYTES ||
+                (int) ( $entry['comp_size'] ?? 0 ) > SMUP_MAX_ZIP_BYTES ) {
+                return smup_error( 'Unexpected or oversized ZIP entry.' );
+            }
+            unset( $expected[ $name ] );
+        }
+        if ( $expected ) { return smup_error( 'Package entries missing.' ); }
+        $manifest_text = $zip->getFromName( 'manifest.json' );
+        $content = $zip->getFromName( 'pattern.blocks.html' );
+    } finally { $zip->close(); }
+    return smup_parse_package( $manifest_text, $content );
+}
+
 function smup_read_package( ?array $upload = null ) {
     if ( null === $upload ) {
         $base = plugin_dir_path( __FILE__ ) . 'sample-package/';
-        $manifest_text = @file_get_contents( $base . 'manifest.json' );
-        $content = @file_get_contents( $base . 'pattern.blocks.html' );
-    } else {
-        if ( UPLOAD_ERR_OK !== ( $upload['error'] ?? -1 ) || ! is_uploaded_file( $upload['tmp_name'] ?? '' ) ||
-            (int) ( $upload['size'] ?? 0 ) > SMUP_MAX_ZIP_BYTES ||
-            ! preg_match( '/\.zip$/i', (string) ( $upload['name'] ?? '' ) ) ) {
-            return smup_error( 'Upload a valid package ZIP up to 3 MB.' );
-        }
-        if ( ! class_exists( 'ZipArchive' ) ) { return smup_error( 'PHP ZipArchive is unavailable.' ); }
-        $zip = new ZipArchive();
-        if ( true !== $zip->open( $upload['tmp_name'], ZipArchive::RDONLY ) ) {
-            return smup_error( 'The ZIP cannot be opened.' );
-        }
-        try {
-            if ( 2 !== $zip->numFiles ) { return smup_error( 'POC ZIP must contain exactly manifest.json and pattern.blocks.html.' ); }
-            $expected = array( 'manifest.json' => true, 'pattern.blocks.html' => true );
-            for ( $i = 0; $i < $zip->numFiles; $i++ ) {
-                $entry = $zip->statIndex( $i );
-                $name = $entry['name'] ?? '';
-                if ( ! isset( $expected[ $name ] ) || (int) ( $entry['size'] ?? 0 ) > SMUP_MAX_CONTENT_BYTES ) {
-                    return smup_error( 'Unexpected or oversized ZIP entry.' );
-                }
-                unset( $expected[ $name ] );
-            }
-            if ( $expected ) { return smup_error( 'Package entries missing.' ); }
-            $manifest_text = $zip->getFromName( 'manifest.json' );
-            $content = $zip->getFromName( 'pattern.blocks.html' );
-        } finally {
-            $zip->close();
-        }
+        return smup_parse_package( @file_get_contents( $base . 'manifest.json' ), @file_get_contents( $base . 'pattern.blocks.html' ) );
     }
+    if ( UPLOAD_ERR_OK !== ( $upload['error'] ?? -1 ) || ! is_uploaded_file( $upload['tmp_name'] ?? '' ) ||
+        (int) ( $upload['size'] ?? 0 ) > SMUP_MAX_ZIP_BYTES ||
+        ! preg_match( '/\\.zip$/i', (string) ( $upload['name'] ?? '' ) ) ) {
+        return smup_error( 'Upload a valid package ZIP up to 3 MB.' );
+    }
+    return smup_read_zip_file( $upload['tmp_name'] );
+}
+
+function smup_parse_package( $manifest_text, $content ) {
     $manifest = is_string( $manifest_text ) ? json_decode( $manifest_text, true ) : null;
     if ( ! is_array( $manifest ) || ! is_string( $content ) ||
         1 !== ( $manifest['schema'] ?? null ) ||
