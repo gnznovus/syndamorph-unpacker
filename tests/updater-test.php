@@ -7,9 +7,17 @@ $GLOBALS['filters'] = array();
 $GLOBALS['transients'] = array();
 $GLOBALS['response'] = null;
 $GLOBALS['http_requests'] = array();
+function add_action( $name, $callback, $priority = 10, $accepted_args = 1 ): void { $GLOBALS['actions'][$name] = $callback; }
 function add_filter( $name, $callback, $priority = 10, $accepted_args = 1 ): void {
     $GLOBALS['filters'][$name] = $callback;
 }
+function delete_transient( $key ) { unset( $GLOBALS['transients'][$key] ); }
+function get_option( $key, $default = false ) { return $GLOBALS['options'][$key] ?? $default; }
+function update_option( $key, $value, $autoload = null ) { $GLOBALS['options'][$key] = $value; }
+function delete_site_transient( $key ) { $GLOBALS['site_deleted'][] = $key; }
+function wp_next_scheduled( $hook ) { return false; }
+function wp_schedule_event( $time, $schedule, $hook ) { $GLOBALS['scheduled'][] = $hook; }
+function wp_update_plugins() { $GLOBALS['wp_updates'] = ( $GLOBALS['wp_updates'] ?? 0 ) + 1; }
 function get_transient( $key ) { return $GLOBALS['transients'][$key] ?? false; }
 function set_transient( $key, $data, $ttl ) {
     $GLOBALS['transients'][$key] = $data;
@@ -50,6 +58,12 @@ $GLOBALS['response'] = array( 'code' => 200, 'body' => json_encode( $good ) );
 $one = smup_release_metadata();
 $two = smup_release_metadata();
 check( $one === $two && count( $GLOBALS['http_requests'] ) === 1, 'Cache did not work' );
+check( $GLOBALS['ttl'] === 300, 'Positive release metadata TTL should be 5 minutes' );
+check( $GLOBALS['options'][SMUP_UPDATE_STATUS]['version'] === '0.1.2', 'Heartbeat status missing' );
+$three = smup_release_metadata( true );
+check( $three === $one && count( $GLOBALS['http_requests'] ) === 2, 'Force check failed to bypass release cache' );
+$GLOBALS['actions'][SMUP_HEARTBEAT]();
+check( $GLOBALS['wp_updates'] === 1 && count( $GLOBALS['http_requests'] ) === 3, 'Heartbeat did not refresh core updates' );
 check( $GLOBALS['http_requests'][0][0] === SMUP_RELEASE_API, 'Unexpected repo endpoint' );
 check( ! isset( $GLOBALS['http_requests'][0][1]['headers']['Authorization'] ), 'Updater must not require a private token' );
 $update = $GLOBALS['filters']['update_plugins_github.com'];
