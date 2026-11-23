@@ -6,12 +6,14 @@ The updater is token-free and uses WordPress's native plugin-update API. It only
 
 ## Prepare a release — automated GitHub Actions
 
-1. Update `syndamorph-unpacker-poc/syndamorph-unpacker-poc.php` to the intended version and add a matching **top** entry in `CHANGELOG.md`; commit to `main`.
-2. Open **Actions → Prepare Unpacker Release Draft → Run workflow** on `main`.
-3. Enter `vMAJOR.MINOR.PATCH` (for this test: `v0.1.2`). The workflow automatically validates the version and changelog, runs PHP syntax/import/updater tests, packages the exact plugin directory, verifies the ZIP checksum, creates the tag on the validated commit, and opens an **unpublished draft release** with the ZIP and SHA-256 file.
+1. Bump the version in `syndamorph-unpacker-poc/syndamorph-unpacker-poc.php` and add a matching **top** entry in `CHANGELOG.md`.
+2. Push the commit to `main`. **GitHub Actions triggers automatically**; there is no need to manually run a workflow, create a tag, or upload a ZIP.
+3. On a new version, the workflow validates the version and changelog, runs PHP syntax/import/updater tests, packages the plugin, verifies the ZIP checksum, creates the tag, and opens an **unpublished release draft**. Other pushes run the existing CI workflow but skip new release preparation when the version is already tagged or released.
 4. Review the draft release and click **Publish release** when approved. The workflow does not publish or deploy automatically.
 
-No manual tag or ZIP upload is required. An existing tag may be reused only if it points to the exact validated commit; an existing release is never overwritten.
+For an interrupted draft-generation run, use **Actions → Prepare Unpacker Release Draft → Run workflow** on the exact tagged commit; an existing tag is never silently moved. Manual retries on later commits with that version will fail closed.
+
+No manual tag or ZIP upload is required. An existing release is never overwritten.
 
 ## WordPress acceptance test
 
