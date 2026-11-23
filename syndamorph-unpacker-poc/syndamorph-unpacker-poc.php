@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SyndaMorph Client Unpacker — Independence POC
  * Description: Standalone proof that Core Gutenberg patterns and physical version archives survive unpacker deactivation.
- * Version: 0.1.4
+ * Version: 0.1.5
  * Update URI: https://github.com/gnznovus/syndamorph-unpacker
  * Requires at least: 6.5
  * Requires PHP: 8.1
@@ -254,6 +254,7 @@ function smup_render_page(): void {
     <div class="wrap" style="max-width:980px">
       <h1>Client Unpacker — Independence POC <small style="font-size:0.55em">Gateway integration preview</small></h1>
       <p>Standalone imports remain available without a Gateway. Connected delivery is optional; installed Core patterns never require online access.</p>
+      <?php smup_render_update_status(); ?>
       <?php if ( is_wp_error( $notice ) ) : ?>
         <div class="notice notice-error"><p><?php echo esc_html( $notice->get_error_message() ); ?></p></div>
       <?php elseif ( is_array( $notice ) ) : ?>
