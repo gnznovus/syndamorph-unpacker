@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SyndaMorph Client Unpacker — Independence POC
  * Description: Standalone proof that Core Gutenberg patterns and physical version archives survive unpacker deactivation.
- * Version: 0.1.3
+ * Version: 0.1.4
  * Update URI: https://github.com/gnznovus/syndamorph-unpacker
  * Requires at least: 6.5
  * Requires PHP: 8.1
