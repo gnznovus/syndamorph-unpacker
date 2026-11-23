@@ -1,18 +1,20 @@
 name: Prepare Unpacker Release Draft
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
-        description: Stable release version (for example v0.1.2); the tag is created automatically
-        required: true
+        description: Optional version for manual retries (for example v0.1.2)
+        required: false
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: unpacker-release-${{ inputs.tag }}
+  group: unpacker-release
   cancel-in-progress: false
 
 jobs:
@@ -29,45 +31,58 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Validate version, changelog and release uniqueness
+      - name: Detect new version and validate release eligibility
+        id: gate
         env:
-          TAG: ${{ inputs.tag }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo 'Enter a stable version in vMAJOR.MINOR.PATCH format.' >&2
+          HEADER=$(sed -n 's/^ \* Version: //p' syndamorph-unpacker-poc/syndamorph-unpacker-poc.php | head -n 1)
+          if [[ ! "$HEADER" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Invalid stable plugin version: $HEADER" >&2
             exit 1
           fi
-          VERSION="${TAG#v}"
-          HEADER=$(sed -n 's/^ \* Version: //p' syndamorph-unpacker-poc/syndamorph-unpacker-poc.php | head -n 1)
-          if [[ "$HEADER" != "$VERSION" ]]; then
-            echo "Plugin header version ($HEADER) must match $VERSION." >&2
+          TAG="v$HEADER"
+          if [[ "$EVENT_NAME" == 'workflow_dispatch' && -n "$REQUESTED_TAG" && "$REQUESTED_TAG" != "$TAG" ]]; then
+            echo "Requested $REQUESTED_TAG but plugin header is $TAG." >&2
             exit 1
           fi
           CHANGELOG_VERSION=$(sed -nE 's/^## \[([^]]+)\].*/\1/p' syndamorph-unpacker-poc/CHANGELOG.md | head -n 1)
-          if [[ "$CHANGELOG_VERSION" != "$VERSION" ]]; then
-            echo "Top changelog entry ($CHANGELOG_VERSION) must match $VERSION." >&2
+          if [[ "$CHANGELOG_VERSION" != "$HEADER" ]]; then
+            echo "Top changelog version $CHANGELOG_VERSION does not match $HEADER." >&2
             exit 1
           fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; refusing to replace it." >&2
+            if [[ "$EVENT_NAME" == 'push' ]]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "Release $TAG exists; unchanged version, no draft created." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Release $TAG already exists; refusing overwrite." >&2
             exit 1
           fi
-          # Allow safe retries only when the existing tag points to this commit.
           if git show-ref --verify --quiet "refs/tags/$TAG"; then
             TAG_COMMIT=$(git rev-parse "refs/tags/$TAG^{commit}")
+            if [[ "$EVENT_NAME" == 'push' ]]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "Tag $TAG exists at $TAG_COMMIT; manual dispatch required to retry a missing draft." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
             if [[ "$TAG_COMMIT" != "$GITHUB_SHA" ]]; then
-              echo "Tag $TAG already points to $TAG_COMMIT, not $GITHUB_SHA." >&2
+              echo "Tag $TAG exists on a different commit: $TAG_COMMIT." >&2
               exit 1
             fi
-            echo "Reusing existing tag $TAG at this exact commit."
           fi
-
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "Preparing $TAG from $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
       - name: Test and package exact plugin contents
+        if: steps.gate.outputs.skip == 'false'
         env:
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ steps.gate.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -78,8 +93,9 @@ jobs:
           (cd dist && sha256sum --check syndamorph-unpacker-poc.zip.sha256)
 
       - name: Create tag automatically after successful validation
+        if: steps.gate.outputs.skip == 'false'
         env:
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ steps.gate.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -91,14 +107,18 @@ jobs:
               tag -a "$TAG" -m "Unpacker $TAG"
             git push origin "refs/tags/$TAG"
           fi
-          # Verify the remote annotated tag resolves to the validated commit.
+          # Resolve annotated or lightweight remote tags to the validated commit.
           REMOTE_COMMIT=$(git ls-remote origin "refs/tags/$TAG^{}" | awk '{print $1}')
+          if [[ -z "$REMOTE_COMMIT" ]]; then
+            REMOTE_COMMIT=$(git ls-remote origin "refs/tags/$TAG" | awk '{print $1}')
+          fi
           [[ "$REMOTE_COMMIT" == "$GITHUB_SHA" ]] || { echo 'Remote tag SHA mismatch.' >&2; exit 1; }
 
       - name: Create unpublished release draft with verified ZIP
+        if: steps.gate.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ steps.gate.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
