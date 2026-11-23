@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "type": "wordpress-core-pattern",
+  "slug": "independent-gutenberg-pattern",
+  "title": "Independence POC \u2014 Core Layout",
+  "content": "pattern.blocks.html",
+  "content_sha256": "e622c2653bc9982d632db925dba47cd1cb50d698d47b7565f684ad64564e1dd3",
+  "dependencies": [],
+  "assets": [],
+  "runtime": "wordpress-core",
+  "plugin_required": false
+}
