@@ -1,55 +1,121 @@
 name: Prepare Unpacker Release Draft
+
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing stable tag from default branch (v0.1.2)
+        description: Stable release version (for example v0.1.2); the tag is created automatically
         required: true
         type: string
+
 permissions:
   contents: read
+
 concurrency:
   group: unpacker-release-${{ inputs.tag }}
   cancel-in-progress: false
+
 jobs:
   release:
     if: github.repository == 'gnznovus/syndamorph-unpacker' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out current default branch
+        uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
-          persist-credentials: false
-      - name: Verify stable tag from current default branch
+
+      - name: Validate version, changelog and release uniqueness
         env:
           TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
+          set -euo pipefail
           if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo 'Expected stable vMAJOR.MINOR.PATCH' >&2; exit 1
+            echo 'Enter a stable version in vMAJOR.MINOR.PATCH format.' >&2
+            exit 1
           fi
-          tagged=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
-          git merge-base --is-ancestor "$tagged" "$GITHUB_SHA" || { echo 'Tag not in default branch history' >&2; exit 1; }
-          git checkout --detach "$tagged"
-      - name: Verify and package release
+          VERSION="${TAG#v}"
+          HEADER=$(sed -n 's/^ \* Version: //p' syndamorph-unpacker-poc/syndamorph-unpacker-poc.php | head -n 1)
+          if [[ "$HEADER" != "$VERSION" ]]; then
+            echo "Plugin header version ($HEADER) must match $VERSION." >&2
+            exit 1
+          fi
+          CHANGELOG_VERSION=$(sed -nE 's/^## \[([^]]+)\].*/\1/p' syndamorph-unpacker-poc/CHANGELOG.md | head -n 1)
+          if [[ "$CHANGELOG_VERSION" != "$VERSION" ]]; then
+            echo "Top changelog entry ($CHANGELOG_VERSION) must match $VERSION." >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing to replace it." >&2
+            exit 1
+          fi
+          # Allow safe retries only when the existing tag points to this commit.
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            TAG_COMMIT=$(git rev-parse "refs/tags/$TAG^{commit}")
+            if [[ "$TAG_COMMIT" != "$GITHUB_SHA" ]]; then
+              echo "Tag $TAG already points to $TAG_COMMIT, not $GITHUB_SHA." >&2
+              exit 1
+            fi
+            echo "Reusing existing tag $TAG at this exact commit."
+          fi
+
+      - name: Test and package exact plugin contents
         env:
           TAG: ${{ inputs.tag }}
+        shell: bash
         run: |
+          set -euo pipefail
           find syndamorph-unpacker-poc tests -name '*.php' -print0 | xargs -0 -n 1 php -l
           php tests/import-test.php
           php tests/updater-test.php
           python3 scripts/package_release.py . dist/syndamorph-unpacker-poc.zip "${TAG#v}"
-          (cd dist && sha256sum -c syndamorph-unpacker-poc.zip.sha256)
-      - name: Create unpublished release draft
+          (cd dist && sha256sum --check syndamorph-unpacker-poc.zip.sha256)
+
+      - name: Create tag automatically after successful validation
+        env:
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            [[ "$(git rev-parse "refs/tags/$TAG^{commit}")" == "$GITHUB_SHA" ]] || exit 1
+            echo "Using validated tag $TAG."
+          else
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              tag -a "$TAG" -m "Unpacker $TAG"
+            git push origin "refs/tags/$TAG"
+          fi
+          # Confirm the remote tag resolves to the validated source commit.
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG" || true
+          [[ "$(git rev-parse "refs/tags/$TAG^{commit}")" == "$GITHUB_SHA" ]]
+
+      - name: Create unpublished release draft with verified ZIP
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
+        shell: bash
         run: |
+          set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo 'Release exists already' >&2; exit 1
+            echo "Release $TAG already exists; no overwrite permitted." >&2
+            exit 1
           fi
-          gh release create "$TAG" dist/syndamorph-unpacker-poc.zip dist/syndamorph-unpacker-poc.zip.sha256 \
+          gh release create "$TAG" \
+            dist/syndamorph-unpacker-poc.zip \
+            dist/syndamorph-unpacker-poc.zip.sha256 \
             --verify-tag --draft --title "Unpacker $TAG" \
-            --notes "Independent client-side Gutenberg Unpacker update test $TAG"
-          echo "Draft created; publish manually after verification." >> "$GITHUB_STEP_SUMMARY"
+            --notes "Standalone SyndaMorph Unpacker $TAG. Tested plugin package; WordPress-owned patterns and local archives remain independent of the plugin."
+          gh release view "$TAG" --json isDraft,isPrerelease,tagName,assets \
+            --jq '(.isDraft == true) and (.isPrerelease == false) and (.tagName == "'"${TAG}"'") and (([.assets[].name] | sort) == ["syndamorph-unpacker-poc.zip", "syndamorph-unpacker-poc.zip.sha256"])' \
+            | grep -qx true
+          {
+            echo "### Release draft ready: $TAG"
+            echo "Tagged commit: \`$GITHUB_SHA\`"
+            echo "Tests, package and checksum validated. Publish only after review."
+          } >> "$GITHUB_STEP_SUMMARY"
