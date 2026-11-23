@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4] - 2026-11-23
+
+- Add optional Secure Gateway customer connection using encrypted client-level API keys.
+- Discover private leased packages and download authorized versions with one-time grants.
+- Verify downloaded ZIP integrity before importing through the existing Core Gutenberg pipeline.
+- Preserve standalone imports, versioned archives and native GitHub updater independence.
+
+
 ## [0.1.3] - 2026-11-23
 
 - Ensure WordPress recognizes automatic-update support even before the first published release or during a GitHub outage.

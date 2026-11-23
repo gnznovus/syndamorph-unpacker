@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SyndaMorph Client Unpacker — Independence POC
  * Description: Standalone proof that Core Gutenberg patterns and physical version archives survive unpacker deactivation.
- * Version: 0.1.3
+ * Version: 0.1.4
  * Update URI: https://github.com/gnznovus/syndamorph-unpacker
  * Requires at least: 6.5
  * Requires PHP: 8.1
@@ -10,6 +10,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 require_once plugin_dir_path( __FILE__ ) . 'includes/updater.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/gateway-client.php';
 
 /** The published output is a WordPress-owned wp_block; no render hooks are registered. */
 const SMUP_MAX_ZIP_BYTES = 3145728;
@@ -60,40 +61,46 @@ function smup_validate_blocks( string $content ) {
     return true;
 }
 
+function smup_read_zip_file( string $filename ) {
+    if ( ! is_file( $filename ) || (int) filesize( $filename ) > SMUP_MAX_ZIP_BYTES || (int) filesize( $filename ) <= 0 ) {
+        return smup_error( 'Package ZIP exceeds the allowed size or is missing.' );
+    }
+    if ( ! class_exists( 'ZipArchive' ) ) { return smup_error( 'PHP ZipArchive is unavailable.' ); }
+    $zip = new ZipArchive();
+    if ( true !== $zip->open( $filename, ZipArchive::RDONLY ) ) { return smup_error( 'The ZIP cannot be opened.' ); }
+    try {
+        if ( 2 !== $zip->numFiles ) { return smup_error( 'POC ZIP must contain exactly manifest.json and pattern.blocks.html.' ); }
+        $expected = array( 'manifest.json' => true, 'pattern.blocks.html' => true );
+        for ( $i = 0; $i < $zip->numFiles; $i++ ) {
+            $entry = $zip->statIndex( $i );
+            $name = $entry['name'] ?? '';
+            if ( ! isset( $expected[ $name ] ) || (int) ( $entry['size'] ?? 0 ) > SMUP_MAX_CONTENT_BYTES ||
+                (int) ( $entry['comp_size'] ?? 0 ) > SMUP_MAX_ZIP_BYTES ) {
+                return smup_error( 'Unexpected or oversized ZIP entry.' );
+            }
+            unset( $expected[ $name ] );
+        }
+        if ( $expected ) { return smup_error( 'Package entries missing.' ); }
+        $manifest_text = $zip->getFromName( 'manifest.json' );
+        $content = $zip->getFromName( 'pattern.blocks.html' );
+    } finally { $zip->close(); }
+    return smup_parse_package( $manifest_text, $content );
+}
+
 function smup_read_package( ?array $upload = null ) {
     if ( null === $upload ) {
         $base = plugin_dir_path( __FILE__ ) . 'sample-package/';
-        $manifest_text = @file_get_contents( $base . 'manifest.json' );
-        $content = @file_get_contents( $base . 'pattern.blocks.html' );
-    } else {
-        if ( UPLOAD_ERR_OK !== ( $upload['error'] ?? -1 ) || ! is_uploaded_file( $upload['tmp_name'] ?? '' ) ||
-            (int) ( $upload['size'] ?? 0 ) > SMUP_MAX_ZIP_BYTES ||
-            ! preg_match( '/\.zip$/i', (string) ( $upload['name'] ?? '' ) ) ) {
-            return smup_error( 'Upload a valid package ZIP up to 3 MB.' );
-        }
-        if ( ! class_exists( 'ZipArchive' ) ) { return smup_error( 'PHP ZipArchive is unavailable.' ); }
-        $zip = new ZipArchive();
-        if ( true !== $zip->open( $upload['tmp_name'], ZipArchive::RDONLY ) ) {
-            return smup_error( 'The ZIP cannot be opened.' );
-        }
-        try {
-            if ( 2 !== $zip->numFiles ) { return smup_error( 'POC ZIP must contain exactly manifest.json and pattern.blocks.html.' ); }
-            $expected = array( 'manifest.json' => true, 'pattern.blocks.html' => true );
-            for ( $i = 0; $i < $zip->numFiles; $i++ ) {
-                $entry = $zip->statIndex( $i );
-                $name = $entry['name'] ?? '';
-                if ( ! isset( $expected[ $name ] ) || (int) ( $entry['size'] ?? 0 ) > SMUP_MAX_CONTENT_BYTES ) {
-                    return smup_error( 'Unexpected or oversized ZIP entry.' );
-                }
-                unset( $expected[ $name ] );
-            }
-            if ( $expected ) { return smup_error( 'Package entries missing.' ); }
-            $manifest_text = $zip->getFromName( 'manifest.json' );
-            $content = $zip->getFromName( 'pattern.blocks.html' );
-        } finally {
-            $zip->close();
-        }
+        return smup_parse_package( @file_get_contents( $base . 'manifest.json' ), @file_get_contents( $base . 'pattern.blocks.html' ) );
     }
+    if ( UPLOAD_ERR_OK !== ( $upload['error'] ?? -1 ) || ! is_uploaded_file( $upload['tmp_name'] ?? '' ) ||
+        (int) ( $upload['size'] ?? 0 ) > SMUP_MAX_ZIP_BYTES ||
+        ! preg_match( '/\\.zip$/i', (string) ( $upload['name'] ?? '' ) ) ) {
+        return smup_error( 'Upload a valid package ZIP up to 3 MB.' );
+    }
+    return smup_read_zip_file( $upload['tmp_name'] );
+}
+
+function smup_parse_package( $manifest_text, $content ) {
     $manifest = is_string( $manifest_text ) ? json_decode( $manifest_text, true ) : null;
     if ( ! is_array( $manifest ) || ! is_string( $content ) ||
         1 !== ( $manifest['schema'] ?? null ) ||
@@ -212,24 +219,90 @@ add_action( 'admin_menu', static function (): void {
 function smup_render_page(): void {
     if ( ! current_user_can( 'manage_options' ) ) { return; }
     $notice = null;
+    $remote_packages = null;
     if ( 'POST' === ( $_SERVER['REQUEST_METHOD'] ?? '' ) && isset( $_POST['smup_action'] ) ) {
         check_admin_referer( 'smup_import', 'smup_nonce' );
         $kind = sanitize_key( wp_unslash( $_POST['smup_action'] ) );
-        $package = 'sample' === $kind ? smup_read_package() :
-            ( 'upload' === $kind ? smup_read_package( $_FILES['package_zip'] ?? array() ) : smup_error( 'Invalid action.' ) );
-        $notice = is_wp_error( $package ) ? $package : smup_import( $package );
+        if ( 'connect' === $kind ) {
+            $notice = smup_gateway_connect(
+                isset( $_POST['gateway_url'] ) && is_string( $_POST['gateway_url'] ) ? wp_unslash( $_POST['gateway_url'] ) : '',
+                isset( $_POST['gateway_key'] ) && is_string( $_POST['gateway_key'] ) ? wp_unslash( $_POST['gateway_key'] ) : ''
+            );
+        } elseif ( 'disconnect' === $kind ) {
+            delete_option( 'smup_gateway_connection' );
+            $notice = array( 'message' => 'Gateway connection disconnected. Existing patterns and archives are untouched.' );
+        } elseif ( 'refresh' === $kind ) {
+            $remote_packages = smup_gateway_packages();
+            $notice = is_wp_error( $remote_packages ) ? $remote_packages : array( 'message' => 'Leased package list refreshed.' );
+        } elseif ( 'gateway_import' === $kind ) {
+            $notice = smup_gateway_import(
+                isset( $_POST['gateway_package'] ) && is_string( $_POST['gateway_package'] ) ? sanitize_text_field( wp_unslash( $_POST['gateway_package'] ) ) : '',
+                isset( $_POST['gateway_version'] ) && is_string( $_POST['gateway_version'] ) ? sanitize_text_field( wp_unslash( $_POST['gateway_version'] ) ) : ''
+            );
+        } else {
+            $package = 'sample' === $kind ? smup_read_package() :
+                ( 'upload' === $kind ? smup_read_package( $_FILES['package_zip'] ?? array() ) : smup_error( 'Invalid action.' ) );
+            $notice = is_wp_error( $package ) ? $package : smup_import( $package );
+        }
     }
+    $connection = get_option( 'smup_gateway_connection', array() );
+    $connected = is_array( $connection ) && (bool) smup_gateway_config();
+    if ( $connected && null === $remote_packages ) { $remote_packages = smup_gateway_packages(); }
     $all = get_posts( array( 'post_type' => 'wp_block', 'post_status' => 'publish',
         'numberposts' => 20, 'meta_key' => '_smup_poc_slug', 'orderby' => 'ID', 'order' => 'DESC' ) );
     ?>
     <div class="wrap" style="max-width:980px">
-      <h1>Client Unpacker — Independence POC <small style="font-size:0.55em">v0.1.3</small></h1>
-      <p>Standalone plugin · no SyndaMorph backend, Purr Gateway, or API key required.</p>
+      <h1>Client Unpacker — Independence POC <small style="font-size:0.55em">Gateway integration preview</small></h1>
+      <p>Standalone imports remain available without a Gateway. Connected delivery is optional; installed Core patterns never require online access.</p>
       <?php if ( is_wp_error( $notice ) ) : ?>
         <div class="notice notice-error"><p><?php echo esc_html( $notice->get_error_message() ); ?></p></div>
       <?php elseif ( is_array( $notice ) ) : ?>
-        <div class="notice notice-success"><p>Unpacked successfully: Pattern #<?php echo (int) $notice['id']; ?> · <?php echo esc_html( $notice['version'] ); ?>.</p></div>
+        <div class="notice notice-success"><p><?php if ( isset( $notice['id'], $notice['version'] ) ) : ?>Unpacked successfully: Pattern #<?php echo (int) $notice['id']; ?> · <?php echo esc_html( $notice['version'] ); ?>.<?php else : ?><?php echo esc_html( $notice['message'] ?? ( isset( $notice['name'] ) ? 'Connected to ' . $notice['name'] : 'Operation completed.' ) ); ?><?php endif; ?></p></div>
       <?php endif; ?>
+      <div style="background:white;border:1px solid #ccd0d4;border-radius:8px;padding:20px;margin:20px 0">
+        <h2 style="margin-top:0">Gateway connection · Optional</h2>
+        <?php if ( ! $connected ) : ?>
+          <p>Connect using the HTTPS Gateway URL and the single API key issued to your customer. Keys are verified before storage and encrypted at rest.</p>
+          <form method="post" autocomplete="off">
+            <?php wp_nonce_field( 'smup_import', 'smup_nonce' ); ?>
+            <input type="hidden" name="smup_action" value="connect">
+            <p><label for="smup-gateway-url">Gateway HTTPS URL</label><br><input type="url" class="regular-text" id="smup-gateway-url" name="gateway_url" placeholder="https://gateway.example.com" required></p>
+            <p><label for="smup-gateway-key">Customer API key</label><br><input type="password" class="regular-text" id="smup-gateway-key" name="gateway_key" autocomplete="new-password" required></p>
+            <?php submit_button( 'Connect to Gateway', 'primary', 'submit', false ); ?>
+          </form>
+        <?php else : ?>
+          <p><strong>Connected customer:</strong> <?php echo esc_html( (string) ( $connection['client_name'] ?? 'Unknown' ) ); ?></p>
+          <p><strong>Gateway:</strong> <code><?php echo esc_html( (string) ( $connection['url'] ?? '' ) ); ?></code></p>
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <form method="post"><?php wp_nonce_field( 'smup_import', 'smup_nonce' ); ?><input type="hidden" name="smup_action" value="refresh"><?php submit_button( 'Refresh leased packages', 'secondary', 'submit', false ); ?></form>
+            <form method="post" onsubmit="return confirm('Disconnect this site from Gateway? Existing patterns and archives are preserved.');"><?php wp_nonce_field( 'smup_import', 'smup_nonce' ); ?><input type="hidden" name="smup_action" value="disconnect"><?php submit_button( 'Disconnect', 'secondary', 'submit', false ); ?></form>
+          </div>
+          <?php if ( is_wp_error( $remote_packages ) ) : ?>
+            <div class="notice notice-warning inline"><p><?php echo esc_html( $remote_packages->get_error_message() ); ?></p></div>
+          <?php elseif ( empty( $remote_packages ) ) : ?>
+            <p>No downloadable packages under an active lease.</p>
+          <?php else : ?>
+            <table class="widefat striped"><thead><tr><th>Private package</th><th>Published version</th><th>Action</th></tr></thead><tbody>
+            <?php foreach ( $remote_packages as $item ) : ?>
+              <?php foreach ( $item['versions'] as $version ) : ?>
+                <tr>
+                  <td><?php echo esc_html( $item['name'] ); ?></td>
+                  <td><?php echo esc_html( $version['version'] ); ?> (<?php echo esc_html( size_format( $version['size'] ) ); ?>)</td>
+                  <td><form method="post">
+                    <?php wp_nonce_field( 'smup_import', 'smup_nonce' ); ?>
+                    <input type="hidden" name="smup_action" value="gateway_import">
+                    <input type="hidden" name="gateway_package" value="<?php echo esc_attr( $item['id'] ); ?>">
+                    <input type="hidden" name="gateway_version" value="<?php echo esc_attr( $version['version'] ); ?>">
+                    <?php submit_button( 'Download &amp; Unpack', 'secondary', 'submit', false ); ?>
+                  </form></td>
+                </tr>
+              <?php endforeach; ?>
+            <?php endforeach; ?>
+            </tbody></table>
+          <?php endif; ?>
+        <?php endif; ?>
+        <p class="description">Manual updates only. Gateway revocation prevents future downloads, not access to already imported content.</p>
+      </div>
       <div style="background:white;border:1px solid #ccd0d4;border-radius:8px;padding:20px;margin:20px 0">
         <h2 style="margin-top:0">1. Unpack a mock package</h2>
         <p>Installs an editable native Gutenberg pattern. Reimport to create another physical version.</p>
