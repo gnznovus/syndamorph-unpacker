@@ -13,6 +13,8 @@ const SMUP_RELEASE_API  = 'https://api.github.com/repos/gnznovus/syndamorph-unpa
 const SMUP_RELEASE_ZIP  = 'syndamorph-unpacker-poc.zip';
 const SMUP_UPDATE_CACHE = 'smup_poc_github_release_v1';
 const SMUP_PLUGIN_FILE  = 'syndamorph-unpacker-poc/syndamorph-unpacker-poc.php';
+const SMUP_UPDATE_STATUS = 'smup_poc_release_check_status';
+const SMUP_HEARTBEAT = 'smup_poc_release_heartbeat';
 
 /** Fail closed on malformed or non-stable releases and unexpected download URLs. */
 function smup_parse_release( $release ): array {
@@ -45,7 +47,8 @@ function smup_parse_release( $release ): array {
     return array();
 }
 
-function smup_release_metadata(): array {
+function smup_release_metadata( bool $force = false ): array {
+    if ( $force ) { delete_transient( SMUP_UPDATE_CACHE ); }
     $cached = get_transient( SMUP_UPDATE_CACHE );
     if ( is_array( $cached ) ) { return $cached; }
 
@@ -61,11 +64,17 @@ function smup_release_metadata(): array {
     ) );
     if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
         set_transient( SMUP_UPDATE_CACHE, array(), MINUTE_IN_SECONDS );
+        update_option( SMUP_UPDATE_STATUS, array( 'checked_at' => time(), 'ok' => false, 'version' => '', 'message' => 'GitHub release lookup failed.' ), false );
         return array();
     }
     $release = smup_parse_release( json_decode( wp_remote_retrieve_body( $response ), true ) );
     // Release publishing and ZIP asset uploads are not necessarily atomic.
-    set_transient( SMUP_UPDATE_CACHE, $release, $release ? 6 * HOUR_IN_SECONDS : MINUTE_IN_SECONDS );
+    set_transient( SMUP_UPDATE_CACHE, $release, $release ? 5 * MINUTE_IN_SECONDS : MINUTE_IN_SECONDS );
+    update_option( SMUP_UPDATE_STATUS, array(
+        'checked_at' => time(), 'ok' => (bool) $release,
+        'version' => $release['version'] ?? '',
+        'message' => $release ? 'Published release available for comparison.' : 'No eligible published release with the required ZIP was found.',
+    ), false );
     return $release;
 }
 
@@ -124,3 +133,71 @@ add_filter( 'plugins_api', static function ( $result, $action, $args ) {
         ),
     );
 }, 10, 3 );
+
+/**
+ * A traffic-driven WP-Cron heartbeat keeps metadata fresh for active sites.
+ * Native WordPress automatic installation remains controlled by WordPress.
+ */
+add_filter( 'cron_schedules', static function ( array $schedules ): array {
+    $schedules['smup_15_minutes'] = array( 'interval' => 15 * MINUTE_IN_SECONDS, 'display' => 'Every 15 minutes (SyndaMorph Unpacker)' );
+    return $schedules;
+} );
+
+add_action( 'init', static function (): void {
+    if ( ! wp_next_scheduled( SMUP_HEARTBEAT ) ) {
+        wp_schedule_event( time() + 60, 'smup_15_minutes', SMUP_HEARTBEAT );
+    }
+} );
+
+add_action( SMUP_HEARTBEAT, static function (): void {
+    $release = smup_release_metadata( true );
+    if ( $release ) {
+        delete_site_transient( 'update_plugins' );
+        if ( ! function_exists( 'wp_update_plugins' ) ) { require_once ABSPATH . 'wp-includes/update.php'; }
+        wp_update_plugins();
+    }
+} );
+
+/** Explicit manual check ignores the custom metadata cache and core's update transient. */
+add_action( 'admin_post_smup_force_update_check', static function (): void {
+    if ( ! current_user_can( 'update_plugins' ) ) { wp_die( 'Forbidden', '', array( 'response' => 403 ) ); }
+    check_admin_referer( 'smup_force_update_check' );
+    $release = smup_release_metadata( true );
+    delete_site_transient( 'update_plugins' );
+    if ( ! function_exists( 'wp_update_plugins' ) ) { require_once ABSPATH . 'wp-includes/update.php'; }
+    wp_update_plugins();
+    $code = $release ? 'checked' : 'unavailable';
+    wp_safe_redirect( add_query_arg( array( 'page' => 'smup-poc', 'smup_update_check' => $code ), admin_url( 'tools.php' ) ) );
+    exit;
+} );
+
+function smup_render_update_status(): void {
+    if ( ! current_user_can( 'manage_options' ) ) { return; }
+    $status = get_option( SMUP_UPDATE_STATUS, array() );
+    if ( ! is_array( $status ) ) { $status = array(); }
+    $version = get_plugin_data( plugin_dir_path( dirname( __FILE__ ) ) . 'syndamorph-unpacker-poc.php', false, false )['Version'] ?? '';
+    $remote = (string) ( $status['version'] ?? '' );
+    $last = ! empty( $status['checked_at'] ) ? wp_date( 'Y-m-d H:i:s T', (int) $status['checked_at'] ) : 'Never';
+    $newer = $remote && version_compare( $remote, $version, '>' );
+    ?>
+    <div style="background:#fff;border:1px solid #ccd0d4;border-radius:8px;padding:20px;margin:20px 0">
+      <h2 style="margin-top:0">Plugin release heartbeat</h2>
+      <p><strong>Installed:</strong> <?php echo esc_html( $version ); ?> · <strong>Latest published:</strong> <?php echo esc_html( $remote ?: 'Not confirmed' ); ?></p>
+      <p><strong>Last GitHub check:</strong> <?php echo esc_html( $last ); ?> · <strong>Result:</strong> <?php echo esc_html( (string) ( $status['message'] ?? 'No checks recorded.' ) ); ?></p>
+      <?php if ( $newer ) : ?>
+        <p><strong>Newer release detected.</strong> <a href="<?php echo esc_url( admin_url( 'plugins.php' ) ); ?>">Open Plugins to install the update</a>.</p>
+      <?php elseif ( $remote && ! $newer ) : ?>
+        <p>No newer published release detected.</p>
+      <?php endif; ?>
+      <?php if ( isset( $_GET['smup_update_check'] ) ) : ?>
+        <p role="status"><?php echo 'checked' === sanitize_key( wp_unslash( $_GET['smup_update_check'] ) ) ? 'Manual release check completed.' : 'Manual release check completed; no eligible published release could be confirmed.'; ?></p>
+      <?php endif; ?>
+      <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+        <input type="hidden" name="action" value="smup_force_update_check">
+        <?php wp_nonce_field( 'smup_force_update_check' ); ?>
+        <?php submit_button( 'Check GitHub for updates now', 'secondary', 'submit', false ); ?>
+      </form>
+      <p class="description">Checks automatically every 15 minutes when WP-Cron is running; manual check bypasses both update caches. Draft releases are not eligible. Updates are never installed by this button.</p>
+    </div>
+    <?php
+}
