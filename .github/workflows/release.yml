@@ -91,9 +91,9 @@ jobs:
               tag -a "$TAG" -m "Unpacker $TAG"
             git push origin "refs/tags/$TAG"
           fi
-          # Confirm the remote tag resolves to the validated source commit.
-          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG" || true
-          [[ "$(git rev-parse "refs/tags/$TAG^{commit}")" == "$GITHUB_SHA" ]]
+          # Verify the remote annotated tag resolves to the validated commit.
+          REMOTE_COMMIT=$(git ls-remote origin "refs/tags/$TAG^{}" | awk '{print $1}')
+          [[ "$REMOTE_COMMIT" == "$GITHUB_SHA" ]] || { echo 'Remote tag SHA mismatch.' >&2; exit 1; }
 
       - name: Create unpublished release draft with verified ZIP
         env:
