@@ -1,0 +1,15 @@
+name: Unpacker POC checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and smoke tests
+        run: |
+          find syndamorph-unpacker-poc tests -name '*.php' -print0 | xargs -0 -n 1 php -l
+          php tests/import-test.php
+          php tests/updater-test.php
