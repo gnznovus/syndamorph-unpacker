@@ -60,12 +60,12 @@ function smup_release_metadata(): array {
         ),
     ) );
     if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
-        set_transient( SMUP_UPDATE_CACHE, array(), 15 * MINUTE_IN_SECONDS );
+        set_transient( SMUP_UPDATE_CACHE, array(), MINUTE_IN_SECONDS );
         return array();
     }
     $release = smup_parse_release( json_decode( wp_remote_retrieve_body( $response ), true ) );
     // Release publishing and ZIP asset uploads are not necessarily atomic.
-    set_transient( SMUP_UPDATE_CACHE, $release, $release ? 6 * HOUR_IN_SECONDS : 15 * MINUTE_IN_SECONDS );
+    set_transient( SMUP_UPDATE_CACHE, $release, $release ? 6 * HOUR_IN_SECONDS : MINUTE_IN_SECONDS );
     return $release;
 }
 
@@ -76,7 +76,20 @@ add_filter( 'update_plugins_github.com', static function ( $update, $plugin_data
         return $update;
     }
     $release = smup_release_metadata();
-    if ( ! $release ) { return $update; }
+    // Always supply a valid no_update entry even before the first release or
+    // during a network failure. Core then recognizes that this plugin owns an
+    // update channel and exposes the native automatic-update control.
+    if ( ! $release ) {
+        return array(
+            'id'           => SMUP_UPDATE_URI,
+            'slug'         => 'syndamorph-unpacker-poc',
+            'version'      => $plugin_data['Version'],
+            'url'          => SMUP_UPDATE_URI,
+            'package'      => '',
+            'requires'     => '6.5',
+            'requires_php' => '8.1',
+        );
+    }
 
     return array(
         'id'           => SMUP_UPDATE_URI,
