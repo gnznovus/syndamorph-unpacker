@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.3] - 2026-11-23
+
+- Ensure WordPress recognizes automatic-update support even before the first published release or during a GitHub outage.
+- Reduce failed release metadata caching from 15 minutes to 60 seconds.
+- Preserve Core-block imports and local version archives.
+
 ## [0.1.2] - 2026-11-23
 
 - Release-channel acceptance build for WordPress native updater detection.
