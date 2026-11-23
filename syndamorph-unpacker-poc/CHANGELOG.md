@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.4
+
+- Read private GitHub Release metadata and ZIP assets using a repository-scoped read credential while retaining the native WordPress updater.
+- Add opt-in WordPress plugin-row diagnostics for fresh release discovery and updater state.
+
 ## [0.1.3] - 2026-11-23
 
 - Ensure WordPress recognizes automatic-update support even before the first published release or during a GitHub outage.

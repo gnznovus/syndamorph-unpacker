@@ -35,16 +35,11 @@ On Nginx, explicitly deny web access to the archive folder if the deployment can
 
 PHP syntax and an isolated smoke test of built-in import, Core allowlist, re-import, SHA-256 and archiving are included in development validation. **Live Playground deactivation and editor verification must be performed by the tester.**
 
-## Native GitHub updater (v0.1.1 and later)
+## Native GitHub updater
 
-The plugin now includes a SyndaMorph-style, token-free updater using the native
-WordPress `Update URI` and `update_plugins_github.com` hook. The package is
-restricted to published, stable GitHub Releases carrying the exact ZIP asset
-`syndamorph-unpacker-poc.zip`. Updating plugin files must not change WordPress
-owned `wp_block` patterns or `wp-content/uploads` snapshots.
-
-**Release repository:** `gnznovus/syndamorph-unpacker`. The updater is
-implemented and mock-tested. Live automatic updates require a newer stable,
-published GitHub Release containing `syndamorph-unpacker-poc.zip`. For a step-by-step
-v0.1.1 → v0.1.2 test, see `UPDATER-TEST.md`. The independent POC remains usable
-without GitHub or any API key.
+The updater uses WordPress's native `Update URI` header and
+`update_plugins_github.com` hook. It accepts published stable releases from
+`gnznovus/syndamorph-unpacker` with the exact asset `syndamorph-unpacker-poc.zip`.
+This private repository requires a read credential for updater requests.
+Importing packages and accessing saved patterns and archives work independently
+of GitHub. See [UPDATER-TEST.md](UPDATER-TEST.md) for setup and verification.

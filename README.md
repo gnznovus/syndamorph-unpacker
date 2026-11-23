@@ -8,16 +8,16 @@ Standalone client-side WordPress plugin for importing SyndaMorph artifact packag
 
 Install a built ZIP containing `syndamorph-unpacker-poc/`, activate the plugin, then open **Tools → Unpacker POC**. Import the bundled mock or upload a compatible package ZIP. Deactivate/delete the plugin and verify the pattern remains editable and archived files remain under uploads.
 
-See [plugin documentation](syndamorph-unpacker-poc/README.md) and [updater test procedure](syndamorph-unpacker-poc/UPDATER-TEST.md).
+See the [plugin documentation](syndamorph-unpacker-poc/README.md), [updater diagnosis](UPDATER-DIAGNOSIS.md), and [updater test procedure](syndamorph-unpacker-poc/UPDATER-TEST.md).
 
 ## Development
 
 ```sh
 php tests/import-test.php
 php tests/updater-test.php
-python3 scripts/package_release.py . dist/syndamorph-unpacker-poc.zip 0.1.1
+python3 scripts/package_release.py . dist/syndamorph-unpacker-poc.zip 0.1.4
 ```
 
-The updater requires a **published stable GitHub Release** with the exact asset `syndamorph-unpacker-poc.zip`. A source archive is not an update package. The release workflow creates a draft and never publishes without approval.
+The updater requires a **published stable GitHub Release** with the exact asset `syndamorph-unpacker-poc.zip`. For this private repository, configure a repository-scoped read credential in WordPress. The release workflow creates a draft for manual publication. See the [updater test procedure](syndamorph-unpacker-poc/UPDATER-TEST.md) for configuration and verification.
 
 This repository owns the Unpacker implementation. SyndaMorph's repo owns the production backend and source conversion tools, not this client installation plugin.
