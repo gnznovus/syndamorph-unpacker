@@ -11,6 +11,8 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 require_once plugin_dir_path( __FILE__ ) . 'includes/updater.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/gateway-client.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/portable-package.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/portable-install.php';
 
 /** The published output is a WordPress-owned wp_block; no render hooks are registered. */
 const SMUP_MAX_ZIP_BYTES = 3145728;
@@ -62,13 +64,21 @@ function smup_validate_blocks( string $content ) {
 }
 
 function smup_read_zip_file( string $filename ) {
-    if ( ! is_file( $filename ) || (int) filesize( $filename ) > SMUP_MAX_ZIP_BYTES || (int) filesize( $filename ) <= 0 ) {
+    if ( ! is_file( $filename ) || (int) filesize( $filename ) > SMUP_PORTABLE_MAX_ZIP_BYTES || (int) filesize( $filename ) <= 0 ) {
         return smup_error( 'Package ZIP exceeds the allowed size or is missing.' );
     }
     if ( ! class_exists( 'ZipArchive' ) ) { return smup_error( 'PHP ZipArchive is unavailable.' ); }
     $zip = new ZipArchive();
     if ( true !== $zip->open( $filename, ZipArchive::RDONLY ) ) { return smup_error( 'The ZIP cannot be opened.' ); }
     try {
+        $meta = $zip->statName( 'manifest.json' );
+        if ( ! $meta || $meta['size'] < 2 || $meta['size'] > 65536 ) { return smup_error( 'The package manifest is missing or oversized.' ); }
+        $manifest_text = $zip->getFromIndex( $meta['index'], $meta['size'] + 1 );
+        $manifest = is_string( $manifest_text ) ? json_decode( $manifest_text, true, 32 ) : null;
+        if ( is_array( $manifest ) && 2 === ( $manifest['schema'] ?? null ) && 'wordpress-portable-content' === ( $manifest['type'] ?? null ) ) {
+            return smup_portable_read_zip( $zip, $manifest, $manifest_text );
+        }
+        if ( (int) filesize( $filename ) > SMUP_MAX_ZIP_BYTES ) { return smup_error( 'The legacy package ZIP exceeds its 3 MiB limit.' ); }
         if ( 2 !== $zip->numFiles ) { return smup_error( 'POC ZIP must contain exactly manifest.json and pattern.blocks.html.' ); }
         $expected = array( 'manifest.json' => true, 'pattern.blocks.html' => true );
         for ( $i = 0; $i < $zip->numFiles; $i++ ) {
@@ -93,9 +103,9 @@ function smup_read_package( ?array $upload = null ) {
         return smup_parse_package( @file_get_contents( $base . 'manifest.json' ), @file_get_contents( $base . 'pattern.blocks.html' ) );
     }
     if ( UPLOAD_ERR_OK !== ( $upload['error'] ?? -1 ) || ! is_uploaded_file( $upload['tmp_name'] ?? '' ) ||
-        (int) ( $upload['size'] ?? 0 ) > SMUP_MAX_ZIP_BYTES ||
+        (int) ( $upload['size'] ?? 0 ) > SMUP_PORTABLE_MAX_ZIP_BYTES ||
         ! preg_match( '/\\.zip$/i', (string) ( $upload['name'] ?? '' ) ) ) {
-        return smup_error( 'Upload a valid package ZIP up to 3 MB.' );
+        return smup_error( 'Upload a valid package ZIP up to 25 MiB.' );
     }
     return smup_read_zip_file( $upload['tmp_name'] );
 }
@@ -177,6 +187,7 @@ function smup_snapshot( int $post_id, array $package ) {
 
 /** Each import reuses only the exact POC-owned slug and adds a new version. */
 function smup_import( array $package ) {
+    if ( true === ( $package['portable'] ?? false ) ) { return smup_portable_import( $package ); }
     $slug = $package['slug'];
     $existing = get_posts( array(
         'post_type' => 'wp_block', 'post_status' => 'any', 'numberposts' => 1,
@@ -259,15 +270,22 @@ function smup_render_page(): void {
         <div class="notice notice-error"><p><?php echo esc_html( $notice->get_error_message() ); ?></p></div>
       <?php elseif ( is_array( $notice ) ) : ?>
         <div class="notice notice-success"><p><?php if ( isset( $notice['id'], $notice['version'] ) ) : ?>Unpacked successfully: Pattern #<?php echo (int) $notice['id']; ?> · <?php echo esc_html( $notice['version'] ); ?>.<?php else : ?><?php echo esc_html( $notice['message'] ?? ( isset( $notice['name'] ) ? 'Connected to ' . $notice['name'] : 'Operation completed.' ) ); ?><?php endif; ?></p></div>
+        <?php if ( ! empty( $notice['items'] ) ) : ?>
+          <ul>
+          <?php foreach ( $notice['items'] as $post_id ) : ?>
+            <li><a href="<?php echo esc_url( get_edit_post_link( $post_id ) ); ?>"><?php echo esc_html( get_the_title( $post_id ) ); ?></a></li>
+          <?php endforeach; ?>
+          </ul>
+        <?php endif; ?>
       <?php endif; ?>
       <div style="background:white;border:1px solid #ccd0d4;border-radius:8px;padding:20px;margin:20px 0">
         <h2 style="margin-top:0">Gateway connection · Optional</h2>
         <?php if ( ! $connected ) : ?>
-          <p>Connect using the HTTPS Gateway URL and the single API key issued to your customer. Keys are verified before storage and encrypted at rest.</p>
+          <p>Connect using your Gateway origin and customer API key. Keys are verified before storage and encrypted at rest.</p>
           <form method="post" autocomplete="off">
             <?php wp_nonce_field( 'smup_import', 'smup_nonce' ); ?>
             <input type="hidden" name="smup_action" value="connect">
-            <p><label for="smup-gateway-url">Gateway HTTPS URL</label><br><input type="url" class="regular-text" id="smup-gateway-url" name="gateway_url" placeholder="https://gateway.example.com" required></p>
+            <p><label for="smup-gateway-url">Gateway URL</label><br><input type="url" class="regular-text" id="smup-gateway-url" name="gateway_url" placeholder="https://gateway.example.com" required></p>
             <p><label for="smup-gateway-key">Customer API key</label><br><input type="password" class="regular-text" id="smup-gateway-key" name="gateway_key" autocomplete="new-password" required></p>
             <?php submit_button( 'Connect to Gateway', 'primary', 'submit', false ); ?>
           </form>
@@ -313,7 +331,7 @@ function smup_render_page(): void {
           <?php submit_button( 'Import built-in mock package', 'primary', 'submit', false ); ?>
         </form>
         <hr style="margin:24px 0">
-        <h2>Or upload the mock package ZIP</h2>
+        <h2>Or upload a package ZIP</h2>
         <form method="post" enctype="multipart/form-data">
           <?php wp_nonce_field( 'smup_import', 'smup_nonce' ); ?>
           <input type="hidden" name="smup_action" value="upload">
@@ -339,7 +357,7 @@ function smup_render_page(): void {
         <h2 style="margin-top:0">3. Deactivate Unpacker and verify independence</h2>
         <p>Plugins → Deactivate <strong>SyndaMorph Client Unpacker — Independence POC</strong>. Then visit Appearance → Editor → Patterns (or your WordPress Patterns screen) and find <strong>Independence POC — Core Layout</strong>. Open and edit its Core blocks.</p>
         <p>Physical backups remain at: <code>wp-content/uploads/syndamorph-unpacker-archives/pattern-{ID}/versions/</code>. They are independent of this plugin directory.</p>
-        <p><strong>Important:</strong> This POC proves only Core-block patterns with no external assets or runtime dependencies. Its admin screen disappears on deactivation, but the pattern and snapshots should remain.</p>
+        <p>The built-in example uses only Core blocks. Portable packages that require custom components continue to use the separate SyndaMorph Runtime. Saved WordPress content and media remain available after Unpacker is removed.</p>
       </div>
     </div>
     <?php
