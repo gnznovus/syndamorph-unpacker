@@ -227,6 +227,34 @@ add_action( 'admin_menu', static function (): void {
     add_management_page( 'Unpacker Independence POC', 'Unpacker POC', 'manage_options', 'smup-poc', 'smup_render_page' );
 } );
 
+add_action( 'admin_enqueue_scripts', static function ( string $hook ): void {
+    if ( 'tools_page_smup-poc' !== $hook ) { return; }
+    wp_enqueue_script( 'smup-gateway-connect', plugins_url( 'assets/gateway-connect.js', __FILE__ ), array(),
+        (string) filemtime( __DIR__ . '/assets/gateway-connect.js' ), true );
+} );
+
+function smup_connect_from_form() {
+    return smup_gateway_connect(
+        isset( $_POST['gateway_url'] ) && is_string( $_POST['gateway_url'] ) ? wp_unslash( $_POST['gateway_url'] ) : '',
+        isset( $_POST['gateway_key'] ) && is_string( $_POST['gateway_key'] ) ? wp_unslash( $_POST['gateway_key'] ) : ''
+    );
+}
+
+add_action( 'wp_ajax_smup_gateway_connect', static function (): void {
+    nocache_headers();
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_send_json_error( array( 'message' => 'Administrator access is required.' ), 403 );
+    }
+    if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) || ! check_ajax_referer( 'smup_import', 'smup_nonce', false ) ) {
+        wp_send_json_error( array( 'message' => 'Reload this page to renew the connection form, then try again.' ), 403 );
+    }
+    $result = smup_connect_from_form();
+    if ( is_wp_error( $result ) ) {
+        wp_send_json_error( array( 'message' => $result->get_error_message() ), (int) $result->get_error_data()['status'] );
+    }
+    wp_send_json_success( array() );
+} );
+
 function smup_render_page(): void {
     if ( ! current_user_can( 'manage_options' ) ) { return; }
     $notice = null;
@@ -235,10 +263,7 @@ function smup_render_page(): void {
         check_admin_referer( 'smup_import', 'smup_nonce' );
         $kind = sanitize_key( wp_unslash( $_POST['smup_action'] ) );
         if ( 'connect' === $kind ) {
-            $notice = smup_gateway_connect(
-                isset( $_POST['gateway_url'] ) && is_string( $_POST['gateway_url'] ) ? wp_unslash( $_POST['gateway_url'] ) : '',
-                isset( $_POST['gateway_key'] ) && is_string( $_POST['gateway_key'] ) ? wp_unslash( $_POST['gateway_key'] ) : ''
-            );
+            $notice = smup_connect_from_form();
         } elseif ( 'disconnect' === $kind ) {
             delete_option( 'smup_gateway_connection' );
             $notice = array( 'message' => 'Gateway connection disconnected. Existing patterns and archives are untouched.' );
@@ -282,12 +307,15 @@ function smup_render_page(): void {
         <h2 style="margin-top:0">Gateway connection · Optional</h2>
         <?php if ( ! $connected ) : ?>
           <p>Connect using your Gateway origin and customer API key. Keys are verified before storage and encrypted at rest.</p>
-          <form method="post" autocomplete="off">
+          <form method="post" autocomplete="off" id="smup-gateway-connect"
+                data-ajax-url="<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>">
             <?php wp_nonce_field( 'smup_import', 'smup_nonce' ); ?>
             <input type="hidden" name="smup_action" value="connect">
             <p><label for="smup-gateway-url">Gateway URL</label><br><input type="url" class="regular-text" id="smup-gateway-url" name="gateway_url" placeholder="https://gateway.example.com" required></p>
             <p><label for="smup-gateway-key">Customer API key</label><br><input type="password" class="regular-text" id="smup-gateway-key" name="gateway_key" autocomplete="new-password" required></p>
             <?php submit_button( 'Connect to Gateway', 'primary', 'submit', false ); ?>
+            <button type="reset" class="button" hidden>Cancel</button>
+            <p role="status" aria-live="polite"></p>
           </form>
         <?php else : ?>
           <p><strong>Connected customer:</strong> <?php echo esc_html( (string) ( $connection['client_name'] ?? 'Unknown' ) ); ?></p>
